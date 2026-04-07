@@ -1,6 +1,23 @@
+# ============================================================
+# Frappe BBT - Custom Image pentru Coolify
+# Imaginie: ghcr.io/crowzers/bbt-frappe-coolify
+# Domeniu: desk.beanbagtheory.ro
+# ============================================================
+#
+# VARIABILE ENVIRONMENT in Coolify UI:
+#   FRAPPE_IMAGE        → ghcr.io/crowzers/bbt-frappe-coolify
+#   FRAPPE_VERSION      → latest
+#   SERVICE_PASSWORD_DB → auto-generat
+#   SERVICE_PASSWORD_ADMIN → auto-generat
+#   SITES_JSON_BASE64   → base64 din sites.json (vezi mai jos)
+#
+# Pentru SITES_JSON_BASE64, ruleaza pe VPS:
+#   echo '[{"name":"desk.beanbagtheory.ro","apps":["crm","helpdesk","insights","telephony","frappe_whatsapp"],"default":true}]' | base64 -w 0
+# ============================================================
+
 services:
   configure:
-    image: "${FRAPPE_IMAGE}:${FRAPPE_VERSION:-develop}"
+    image: "${FRAPPE_IMAGE}:${FRAPPE_VERSION:-latest}"
     restart: "no"
     entrypoint:
       - bash
@@ -14,12 +31,13 @@ services:
         bench set-config -g redis_queue "redis://redis-queue:6379";
         bench set-config -g redis_socketio "redis://redis-queue:6379";
         bench set-config -gp socketio_port 9000;
+        bench set-config -g http_timeout 300;
     volumes:
       - sites:/home/frappe/frappe-bench/sites
       - logs:/home/frappe/frappe-bench/logs
 
   create-site:
-    image: "${FRAPPE_IMAGE}:${FRAPPE_VERSION:-develop}"
+    image: "${FRAPPE_IMAGE}:${FRAPPE_VERSION:-latest}"
     restart: "no"
     entrypoint:
       - bash
@@ -56,6 +74,8 @@ services:
               --admin-password "$$SITE_PWD" \
               --mariadb-user-host-login-scope "%" \
               $$INSTALL_APPS
+            bench --site "$$SITE_NAME" set-config host_name "https://$$SITE_NAME"
+            bench --site "$$SITE_NAME" enable-scheduler
           else
             echo "Site $$SITE_NAME already exists. Skipping."
           fi
@@ -69,8 +89,6 @@ services:
     environment:
       SITES_JSON_BASE64: "${SITES_JSON_BASE64}"
       ADMIN_PASSWORD: "${SERVICE_PASSWORD_ADMIN}"
-      ADMIN_PASSWORD_1: "${ADMIN_PASSWORD_1:-}"
-      ADMIN_PASSWORD_2: "${ADMIN_PASSWORD_2:-}"
       DB_ROOT_PASSWORD: "${SERVICE_PASSWORD_DB}"
     depends_on:
       configure:
@@ -83,20 +101,13 @@ services:
         condition: service_healthy
 
   migrate:
-    image: "${FRAPPE_IMAGE}:${FRAPPE_VERSION:-develop}"
+    image: "${FRAPPE_IMAGE}:${FRAPPE_VERSION:-latest}"
     restart: "no"
     entrypoint:
       - bash
       - -c
     command:
-      - >-
-        if [ "${SKIP_MIGRATE:-false}" = "true" ]; then
-          echo "Skipping migration (SKIP_MIGRATE=true)";
-        else
-          bench --site all migrate;
-        fi
-    environment:
-      SKIP_MIGRATE: "${SKIP_MIGRATE:-false}"
+      - bench --site desk.beanbagtheory.ro migrate
     volumes:
       - sites:/home/frappe/frappe-bench/sites
       - logs:/home/frappe/frappe-bench/logs
@@ -105,8 +116,19 @@ services:
         condition: service_completed_successfully
 
   backend:
-    image: "${FRAPPE_IMAGE}:${FRAPPE_VERSION:-develop}"
+    image: "${FRAPPE_IMAGE}:${FRAPPE_VERSION:-latest}"
     restart: unless-stopped
+    command:
+      - /home/frappe/frappe-bench/env/bin/gunicorn
+      - --chdir=/home/frappe/frappe-bench/sites
+      - --bind=0.0.0.0:8000
+      - --threads=4
+      - --workers=4
+      - --worker-class=gthread
+      - --worker-tmp-dir=/dev/shm
+      - --timeout=300
+      - --preload
+      - frappe.app:application
     volumes:
       - sites:/home/frappe/frappe-bench/sites
       - logs:/home/frappe/frappe-bench/logs
@@ -127,18 +149,19 @@ services:
         condition: service_healthy
 
   frontend:
-    image: "${FRAPPE_IMAGE}:${FRAPPE_VERSION:-develop}"
+    image: "${FRAPPE_IMAGE}:${FRAPPE_VERSION:-latest}"
     restart: unless-stopped
     command:
       - nginx-entrypoint.sh
     environment:
       BACKEND: backend:8000
       SOCKETIO: websocket:9000
-      UPSTREAM_REAL_IP_ADDRESS: ${UPSTREAM_REAL_IP_ADDRESS:-127.0.0.1}
-      UPSTREAM_REAL_IP_HEADER: ${UPSTREAM_REAL_IP_HEADER:-X-Forwarded-For}
-      UPSTREAM_REAL_IP_RECURSIVE: ${UPSTREAM_REAL_IP_RECURSIVE:-off}
-      PROXY_READ_TIMEOUT: ${PROXY_READ_TIMEOUT:-120}
-      CLIENT_MAX_BODY_SIZE: ${CLIENT_MAX_BODY_SIZE:-50m}
+      FRAPPE_SITE_NAME_HEADER: desk.beanbagtheory.ro
+      UPSTREAM_REAL_IP_ADDRESS: 127.0.0.1
+      UPSTREAM_REAL_IP_HEADER: X-Forwarded-For
+      UPSTREAM_REAL_IP_RECURSIVE: "off"
+      PROXY_READ_TIMEOUT: "300"
+      CLIENT_MAX_BODY_SIZE: 100m
     volumes:
       - sites:/home/frappe/frappe-bench/sites
       - logs:/home/frappe/frappe-bench/logs
@@ -149,15 +172,12 @@ services:
       retries: 3
       start_period: 10s
     labels:
-      - traefik.http.services.frontend.loadbalancer.server.port=8080
-      # Redirect helpdesk.example.com/ → /helpdesk/my-tickets (customer portal)
-      - traefik.http.middlewares.helpdesk-redirect.redirectregex.regex=^https://helpdesk\.example\.com/?$$
-      - traefik.http.middlewares.helpdesk-redirect.redirectregex.replacement=https://helpdesk.example.com/helpdesk/my-tickets
-      - traefik.http.middlewares.helpdesk-redirect.redirectregex.permanent=true
-      # Redirect crm.example.com/ → /crm
-      - traefik.http.middlewares.crm-redirect.redirectregex.regex=^https://crm\.example\.com/?$$
-      - traefik.http.middlewares.crm-redirect.redirectregex.replacement=https://crm.example.com/crm
-      - traefik.http.middlewares.crm-redirect.redirectregex.permanent=true
+      - traefik.enable=true
+      - traefik.http.routers.frappe-bbt.rule=Host(`desk.beanbagtheory.ro`)
+      - traefik.http.routers.frappe-bbt.entrypoints=https
+      - traefik.http.routers.frappe-bbt.tls=true
+      - traefik.http.routers.frappe-bbt.tls.certresolver=letsencrypt
+      - traefik.http.services.frappe-bbt.loadbalancer.server.port=8080
     depends_on:
       backend:
         condition: service_healthy
@@ -165,7 +185,7 @@ services:
         condition: service_started
 
   websocket:
-    image: "${FRAPPE_IMAGE}:${FRAPPE_VERSION:-develop}"
+    image: "${FRAPPE_IMAGE}:${FRAPPE_VERSION:-latest}"
     restart: unless-stopped
     command:
       - node
@@ -178,7 +198,7 @@ services:
         condition: service_completed_successfully
 
   queue-long:
-    image: "${FRAPPE_IMAGE}:${FRAPPE_VERSION:-develop}"
+    image: "${FRAPPE_IMAGE}:${FRAPPE_VERSION:-latest}"
     restart: unless-stopped
     command:
       - bench
@@ -193,7 +213,7 @@ services:
         condition: service_completed_successfully
 
   queue-short:
-    image: "${FRAPPE_IMAGE}:${FRAPPE_VERSION:-develop}"
+    image: "${FRAPPE_IMAGE}:${FRAPPE_VERSION:-latest}"
     restart: unless-stopped
     command:
       - bench
@@ -208,7 +228,7 @@ services:
         condition: service_completed_successfully
 
   scheduler:
-    image: "${FRAPPE_IMAGE}:${FRAPPE_VERSION:-develop}"
+    image: "${FRAPPE_IMAGE}:${FRAPPE_VERSION:-latest}"
     restart: unless-stopped
     command:
       - bench
@@ -221,7 +241,7 @@ services:
         condition: service_completed_successfully
 
   db:
-    image: mariadb:11.8
+    image: mariadb:10.6
     restart: unless-stopped
     command:
       - --character-set-server=utf8mb4
@@ -231,28 +251,20 @@ services:
     environment:
       MYSQL_ROOT_PASSWORD: "${SERVICE_PASSWORD_DB}"
       MARIADB_ROOT_PASSWORD: "${SERVICE_PASSWORD_DB}"
-      MARIADB_AUTO_UPGRADE: "1"
     volumes:
       - db-data:/var/lib/mysql
     healthcheck:
-      test:
-        - CMD
-        - healthcheck.sh
-        - --connect
-        - --innodb_initialized
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "--silent"]
       start_period: 5s
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 20
 
   redis-cache:
     image: redis:6.2-alpine
     restart: unless-stopped
     healthcheck:
-      test:
-        - CMD
-        - redis-cli
-        - ping
+      test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       retries: 5
 
@@ -262,10 +274,7 @@ services:
     volumes:
       - redis-queue-data:/data
     healthcheck:
-      test:
-        - CMD
-        - redis-cli
-        - ping
+      test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       retries: 5
 
