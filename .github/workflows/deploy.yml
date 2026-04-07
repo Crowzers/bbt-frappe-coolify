@@ -7,7 +7,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ghcr.io/youruser/custom-frappe
+  IMAGE_NAME: ghcr.io/crowzers/bbt-frappe-coolify
 
 jobs:
   build-and-deploy:
