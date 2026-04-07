@@ -373,3 +373,176 @@ configure → create-site → migrate → backend, websocket, workers, scheduler
 - CRM, Helpdesk, and Mint compile their Vue/Vite frontends into standard Frappe assets during `bench build` at image build time -- no separate frontend server needed.
 - `frappe_whatsapp` uses `master` branch (the repo has no `main` or `develop` branch).
 - Nginx routes requests to the correct site using `X-Frappe-Site-Name` header, set to `$frappe_site` (a mapped variable that resolves subdomains to the actual site name — see [App Subdomains](#app-subdomains-eg-helpdeskexamplecom)).
+
+---------------------------------------------------------------------------------
+
+# BBT Frappe Coolify
+
+Production-ready Frappe deployment pentru Bean Bag Theory, bazat pe [srujan00123/FRAPPE-COOLIFY-CUSTOM](https://github.com/srujan00123/FRAPPE-COOLIFY-CUSTOM).
+
+## Apps incluse
+
+- **Frappe CRM** — managementul leadurilor și dealurilor
+- **Helpdesk** — ticketing și suport clienți
+- **Insights** — dashboarduri și rapoarte
+- **Telephony** — integrare telefonie
+- **Frappe WhatsApp** — integrare WhatsApp
+
+## Arhitectură
+
+```
+Client → Coolify Traefik (:443) → frontend (nginx :8080)
+  → static assets servite direct din imagine
+  → /api/* → backend (gunicorn :8000)
+  → /socket.io/* → websocket (node :9000)
+
+backend/workers/scheduler → db (MariaDB :3306)
+                          → redis-cache (:6379)
+                          → redis-queue (:6379)
+```
+
+## Primul deploy
+
+### 1. Fork repo-ul
+
+Fork [acest repo](https://github.com/Crowzers/bbt-frappe-coolify) pe contul tău GitHub.
+
+### 2. Editează apps.json
+
+Modifică `apps.json` cu app-urile dorite. Frappe se instalează automat — nu îl include.
+
+```json
+[
+  {
+    "url": "https://github.com/frappe/crm",
+    "branch": "main"
+  },
+  {
+    "url": "https://github.com/frappe/helpdesk",
+    "branch": "main"
+  },
+  {
+    "url": "https://github.com/frappe/insights",
+    "branch": "main"
+  },
+  {
+    "url": "https://github.com/frappe/telephony",
+    "branch": "develop"
+  },
+  {
+    "url": "https://github.com/shridarpatil/frappe_whatsapp",
+    "branch": "master"
+  }
+]
+```
+
+### 3. Editează sites.json
+
+Modifică `sites.json` cu site-ul tău:
+
+```json
+[
+  {
+    "name": "desk.beanbagtheory.ro",
+    "apps": ["crm", "helpdesk", "insights", "telephony", "frappe_whatsapp"],
+    "default": true
+  }
+]
+```
+
+### 4. Configurează GitHub Actions
+
+În repo → **Settings → Secrets and variables → Actions → New repository secret**:
+
+| Secret | Valoare |
+|--------|---------|
+| `COOLIFY_TOKEN` | API Token din Coolify → Security → API Tokens |
+| `COOLIFY_WEBHOOK` | Webhook URL din Coolify resource (adaugă după ce creezi resource-ul) |
+
+Editează `.github/workflows/deploy.yml` și schimbă:
+```yaml
+IMAGE_NAME: ghcr.io/USERUL_TAU/NUMELE_REPO
+```
+
+### 5. Buildează imaginea
+
+Push orice commit pe `main` — GitHub Actions va buildui și pusha imaginea automat pe GHCR.
+
+Sau triggerează manual din tab-ul **Actions → Run workflow**.
+
+### 6. Generează SITES_JSON_BASE64
+
+Pe VPS sau local:
+
+```bash
+python3 -c "
+import base64, json
+d=[{'name':'desk.beanbagtheory.ro','apps':['crm','helpdesk','insights','telephony','frappe_whatsapp'],'default':True}]
+print(base64.b64encode(json.dumps(d).encode()).decode())
+"
+```
+
+Copiază output-ul — îl vei folosi ca variabilă în Coolify.
+
+### 7. Deploy în Coolify
+
+1. **New Resource → Docker Compose Empty**
+2. Paste conținutul din `docker-compose.coolify.yml`
+3. Setează variabilele de environment:
+
+| Variabilă | Valoare |
+|-----------|---------|
+| `FRAPPE_IMAGE` | `ghcr.io/crowzers/bbt-frappe-coolify` |
+| `FRAPPE_VERSION` | `latest` |
+| `SERVICE_PASSWORD_DB` | auto-generat de Coolify |
+| `SERVICE_PASSWORD_ADMIN` | auto-generat de Coolify |
+| `SITES_JSON_BASE64` | string-ul generat la pasul 6 |
+
+4. **Deploy** — aștepți ~10 minute
+
+### 8. Login
+
+- URL: `https://desk.beanbagtheory.ro`
+- User: `Administrator`
+- Parolă: valoarea din `SERVICE_PASSWORD_ADMIN`
+
+## Update apps
+
+Pentru a actualiza app-urile sau a adăuga unele noi:
+
+1. Modifică `apps.json`
+2. Commit pe `main`
+3. GitHub Actions rebuilduiește imaginea
+4. În Coolify → **Redeploy**
+
+## Structura volumelor
+
+| Volum | Conținut |
+|-------|----------|
+| `db-data` | Baza de date MariaDB |
+| `sites` | Configurații site, fișiere uploadate |
+| `logs` | Loguri Frappe |
+| `redis-queue-data` | Queue-uri Redis persistente |
+
+> **Important**: La Redeploy volumele sunt păstrate — datele nu se pierd.
+
+## Variabile opționale
+
+| Variabilă | Default | Descriere |
+|-----------|---------|-----------|
+| `PROXY_READ_TIMEOUT` | `300` | Timeout nginx upstream (secunde) |
+| `CLIENT_MAX_BODY_SIZE` | `100m` | Dimensiune maximă upload |
+
+## Troubleshooting
+
+### create-site eșuează cu "parse error"
+Regenerează `SITES_JSON_BASE64` folosind comanda Python de la pasul 6.
+
+### migrate eșuează cu "site does not exist"
+Verifică logurile `create-site` — site-ul nu a fost creat. Verifică `SITES_JSON_BASE64`.
+
+### 504 Gateway Timeout
+Backend-ul e supraîncărcat. Mărește `PROXY_READ_TIMEOUT` în variabilele Coolify.
+
+### Assets lipsă (CSS/JS 404)
+Assets-urile sunt compilate în imagine la build time. Dacă lipsesc, rebuilduiește imaginea.
