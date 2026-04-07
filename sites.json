@@ -1,12 +1,7 @@
 [
   {
-    "name": "erp.example.com",
-    "apps": ["erpnext", "hrms", "crm", "helpdesk", "telephony", "frappe_whatsapp", "mint", "india_compliance"],
+    "name": "desk.beanbagtheory.ro",
+    "apps": ["crm", "helpdesk", "insights", "telephony", "frappe_whatsapp"],
     "default": true
-  },
-  {
-    "name": "erp.example2.com",
-    "apps": ["erpnext", "hrms", "crm", "helpdesk", "telephony", "frappe_whatsapp", "mint", "india_compliance"],
-    "default": false
   }
 ]
